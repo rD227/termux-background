@@ -150,10 +150,11 @@
       try {
         const status = JSON.parse(Android.getStatus());
         lastStatus = status;
+        const suMsg = status.suAvailable ? 'root ✓' : 'root ✗';
         if (!status.termuxInstalled) {
-          setState('Blocked: Install Termux', 'Termux is required.', true, true);
+          setState('Blocked: Install Termux', 'Termux is required. ' + suMsg, true, true);
         } else {
-          setState('Ready', 'Termux detected. Select an image and press Apply.', false, false);
+          setState('Ready', 'Termux detected. ' + suMsg + '. Select an image and press Apply.', false, false);
         }
       } catch (err) {
         setState('Error', 'Could not read status: ' + err.message, true, true);
