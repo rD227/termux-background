@@ -169,13 +169,9 @@ public class WebAppInterface {
         Status status = new Status();
         status.termuxInstalled = isPackageInstalled(TERMUX_PACKAGE);
         status.termuxApiInstalled = isPackageInstalled(TERMUX_API_PACKAGE);
-        status.canRunCommands = status.termuxInstalled && status.termuxApiInstalled && canResolveApiBroadcast();
+        status.canRunCommands = status.termuxInstalled;
         if (!status.termuxInstalled) {
             status.lastError = "Termux not installed";
-        } else if (!status.termuxApiInstalled) {
-            status.lastError = "Termux:API not installed";
-        } else if (!status.canRunCommands) {
-            status.lastError = "Termux:API broadcast unavailable";
         }
         return status;
     }
@@ -231,8 +227,8 @@ public class WebAppInterface {
     private boolean canResolveApiBroadcast() {
         Intent intent = new Intent(TERMUX_API_ACTION);
         intent.setPackage(TERMUX_API_PACKAGE);
-        ResolveInfo info = packageManager.resolveBroadcast(intent, 0);
-        return info != null;
+        List<ResolveInfo> receivers = packageManager.queryBroadcastReceivers(intent, 0);
+        return receivers != null && !receivers.isEmpty();
     }
 
     private void copyUriToFile(Uri uri, File destination) throws IOException {
@@ -354,8 +350,8 @@ public class WebAppInterface {
         intent.putExtra("com.termux.api.extra.WORKDIR", cwd);
         intent.putExtra("com.termux.api.extra.BACKGROUND", background);
 
-        ResolveInfo resolveInfo = packageManager.resolveBroadcast(intent, 0);
-        if (resolveInfo == null) {
+        List<ResolveInfo> receivers = packageManager.queryBroadcastReceivers(intent, 0);
+        if (receivers == null || receivers.isEmpty()) {
             return buildError("Termux:API invocation failed: unable to resolve broadcast receiver.");
         }
 

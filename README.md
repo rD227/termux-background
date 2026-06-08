@@ -4,8 +4,10 @@
 
 🖼️ A Termux plugin and Android companion app for adding custom background images to your Termux terminal — with live reload, blur effects, opacity control, and scroll animations.
 
-[![License: GPLv3](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-yellow.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![GitHub stars](https://img.shields.io/github/stars/Justadudeinspace/termux-background.svg)](https://github.com/rD227/termux-background)
+
+**original repository:** [termux-background](https://github.com/Justadudeinspace/termux-background)
 
 ## Overview
 
