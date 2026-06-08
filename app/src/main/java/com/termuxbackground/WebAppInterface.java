@@ -4,25 +4,23 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.text.TextUtils;
+import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -34,10 +32,10 @@ public class WebAppInterface {
 
     private static final String TERMUX_PACKAGE = "com.termux";
     private static final String TERMUX_API_PACKAGE = "com.termux.api";
-    private static final String TERMUX_API_ACTION = "com.termux.api.action.RUN_COMMAND";
     private static final String TERMUX_HOME = "/data/data/com.termux/files/home";
     private static final String TERMUX_CONFIG_DIR = TERMUX_HOME + "/.termux";
     private static final String BACKGROUND_NAME = "background.png";
+    private static final String TAG = "TermuxBG";
 
     private final Context context;
     private final ContentResolver contentResolver;
@@ -45,6 +43,58 @@ public class WebAppInterface {
     private final WebView webView;
 
     private Uri lastImageUri;
+
+    // ── root helpers ──────────────────────────────────────────────
+
+    /** Run a shell command as root via {@code su -c}. */
+    private boolean execRoot(String command) {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+            int exitCode = p.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            Log.e(TAG, "execRoot failed: " + command, e);
+            return false;
+        }
+    }
+
+    /** Read file content from {@code path} using root. */
+    private String readFileRoot(String path) {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "cat " + path});
+            BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            p.waitFor();
+            return p.exitValue() == 0 ? sb.toString() : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** Write {@code content} to {@code path} as root, then fix ownership to Termux. */
+    private boolean writeFileRoot(String path, String content) {
+        try {
+            Process p = Runtime.getRuntime().exec("su");
+            DataOutputStream os = new DataOutputStream(p.getOutputStream());
+            os.writeBytes("cat > " + path + " << 'ENDOFTERMUXBG'\n");
+            os.writeBytes(content);
+            if (!content.endsWith("\n")) os.writeBytes("\n");
+            os.writeBytes("ENDOFTERMUXBG\n");
+            os.writeBytes("OWNER=$(stat -c '%u:%g' " + TERMUX_HOME + ")\n");
+            os.writeBytes("chown $OWNER " + path + "\n");
+            os.writeBytes("exit\n");
+            os.flush();
+            int exitCode = p.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            Log.e(TAG, "writeFileRoot failed: " + path, e);
+            return false;
+        }
+    }
 
     public WebAppInterface(Context context, WebView webView) {
         this.context = context;
@@ -79,7 +129,7 @@ public class WebAppInterface {
 
             Status status = parseStatus();
             if (!status.canRunCommands) {
-                return buildBlocked("Termux or Termux:API missing. Install Termux and Termux:API to continue.").toString();
+                return buildBlocked("Termux is not installed. Please install Termux to continue.").toString();
             }
 
             if (imageUri == null) {
@@ -100,25 +150,41 @@ public class WebAppInterface {
                 return buildError("Unsupported image type. Use PNG or JPEG.").toString();
             }
 
-            File termuxDir = new File(TERMUX_CONFIG_DIR);
-            if (!termuxDir.exists() && !termuxDir.mkdirs()) {
-                return buildError("Unable to create Termux config directory.").toString();
+            // 1. Copy image to our own cache dir first
+            File cacheDir = context.getCacheDir();
+            File cacheImage = new File(cacheDir, BACKGROUND_NAME);
+            try (InputStream in = contentResolver.openInputStream(imageUri);
+                 OutputStream out = new FileOutputStream(cacheImage)) {
+                if (in == null) throw new IOException("Unable to open selected file.");
+                byte[] buf = new byte[8 * 1024];
+                int len;
+                while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
             }
 
-            File backgroundFile = new File(termuxDir, BACKGROUND_NAME);
-            copyUriToFile(imageUri, backgroundFile);
+            // 2. Build merged properties content
+            String existingProps = readFileRoot(TERMUX_CONFIG_DIR + "/termux.properties");
+            String mergedProps = mergePropertiesContent(existingProps, opacity, blur, animation);
 
-            File propsFile = new File(termuxDir, "termux.properties");
-            mergeProperties(propsFile, opacity, blur, animation);
-
-            JSONObject reloadResult = runTermuxApiCommand("termux-reload-settings", new JSONArray(), TERMUX_HOME, true);
-            if (!reloadResult.optBoolean("ok", false)) {
-                return reloadResult.toString();
+            // 3. Write everything via root
+            if (!execRoot("mkdir -p " + TERMUX_CONFIG_DIR)) {
+                return buildError("Unable to create Termux config directory (root).").toString();
             }
+            if (!execRoot("cp " + cacheImage.getAbsolutePath() + " " + TERMUX_CONFIG_DIR + "/" + BACKGROUND_NAME)) {
+                return buildError("Unable to copy background image to Termux.").toString();
+            }
+            if (!writeFileRoot(TERMUX_CONFIG_DIR + "/termux.properties", mergedProps)) {
+                return buildError("Unable to write termux.properties.").toString();
+            }
+            if (!execRoot("OWNER=$(stat -c '%u:%g' " + TERMUX_HOME + "); chown -R $OWNER " + TERMUX_CONFIG_DIR)) {
+                return buildError("Unable to fix file ownership.").toString();
+            }
+
+            // 4. Clean up cache copy
+            cacheImage.delete();
 
             result.put("ok", true);
             result.put("blocked", false);
-            result.put("message", "Background applied and Termux settings reloaded.");
+            result.put("message", "Background applied. Restart Termux to see changes.");
             return result.toString();
         } catch (JSONException e) {
             return buildError("Invalid payload: " + e.getMessage()).toString();
@@ -132,26 +198,23 @@ public class WebAppInterface {
         try {
             Status status = parseStatus();
             if (!status.canRunCommands) {
-                return buildBlocked("Termux or Termux:API missing. Install Termux and Termux:API to continue.").toString();
+                return buildBlocked("Termux is not installed. Please install Termux to continue.").toString();
             }
 
-            File propsFile = new File(TERMUX_CONFIG_DIR, "termux.properties");
-            clearBackgroundKeys(propsFile);
+            // 1. Read existing properties & strip background keys
+            String existingProps = readFileRoot(TERMUX_CONFIG_DIR + "/termux.properties");
+            String filteredProps = clearBackgroundKeysContent(existingProps);
 
-            File backgroundFile = new File(TERMUX_CONFIG_DIR, BACKGROUND_NAME);
-            if (backgroundFile.exists() && !backgroundFile.delete()) {
-                return buildError("Unable to delete existing background image.").toString();
+            // 2. Write cleaned properties & delete image via root
+            if (!writeFileRoot(TERMUX_CONFIG_DIR + "/termux.properties", filteredProps)) {
+                return buildError("Unable to write termux.properties.").toString();
             }
-
-            JSONObject reloadResult = runTermuxApiCommand("termux-reload-settings", new JSONArray(), TERMUX_HOME, true);
-            if (!reloadResult.optBoolean("ok", false)) {
-                return reloadResult.toString();
-            }
+            execRoot("rm -f " + TERMUX_CONFIG_DIR + "/" + BACKGROUND_NAME);
 
             JSONObject result = new JSONObject();
             result.put("ok", true);
             result.put("blocked", false);
-            result.put("message", "Background settings reset and Termux reloaded.");
+            result.put("message", "Background reset. Restart Termux to see changes.");
             return result.toString();
         } catch (Exception e) {
             return buildError("Failed to reset: " + e.getMessage()).toString();
@@ -224,42 +287,16 @@ public class WebAppInterface {
         }
     }
 
-    private boolean canResolveApiBroadcast() {
-        Intent intent = new Intent(TERMUX_API_ACTION);
-        intent.setPackage(TERMUX_API_PACKAGE);
-        List<ResolveInfo> receivers = packageManager.queryBroadcastReceivers(intent, 0);
-        return receivers != null && !receivers.isEmpty();
-    }
+    // ── properties helpers (operate on String content) ────────────
 
-    private void copyUriToFile(Uri uri, File destination) throws IOException {
-        try (InputStream in = contentResolver.openInputStream(uri); OutputStream out = new FileOutputStream(destination)) {
-            if (in == null) {
-                throw new IOException("Unable to open selected file.");
-            }
-            byte[] buffer = new byte[8 * 1024];
-            int len;
-            while ((len = in.read(buffer)) != -1) {
-                out.write(buffer, 0, len);
-            }
-        }
-    }
-
-    private void mergeProperties(File propsFile, double opacity, boolean blur, String animation) throws IOException {
+    private String mergePropertiesContent(String existingContent, double opacity, boolean blur, String animation) {
         Map<String, String> desired = new HashMap<>();
         desired.put("background", BACKGROUND_NAME);
         desired.put("background.opacity", String.valueOf(opacity));
         desired.put("background.blur", String.valueOf(blur));
         desired.put("background.animation", animation);
 
-        List<String> lines = new ArrayList<>();
-        if (propsFile.exists()) {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(propsFile), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    lines.add(line);
-                }
-            }
-        }
+        String[] lines = existingContent.isEmpty() ? new String[0] : existingContent.split("\n");
 
         Set<String> handledKeys = new HashSet<>();
         List<String> updated = new ArrayList<>();
@@ -295,23 +332,13 @@ public class WebAppInterface {
             updated.addAll(missingLines);
         }
 
-        writeLines(propsFile, updated);
+        return String.join("\n", updated);
     }
 
-    private void clearBackgroundKeys(File propsFile) throws IOException {
-        if (!propsFile.exists()) {
-            return;
-        }
-        List<String> lines = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(propsFile), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                lines.add(line);
-            }
-        }
-
+    private String clearBackgroundKeysContent(String existingContent) {
+        if (existingContent.isEmpty()) return "";
         List<String> filtered = new ArrayList<>();
-        for (String line : lines) {
+        for (String line : existingContent.split("\n")) {
             String trimmed = line.trim();
             if (trimmed.startsWith("background=") ||
                 trimmed.startsWith("background.opacity=") ||
@@ -321,58 +348,7 @@ public class WebAppInterface {
             }
             filtered.add(line);
         }
-
-        writeLines(propsFile, filtered);
-    }
-
-    private void writeLines(File file, List<String> lines) throws IOException {
-        try (FileOutputStream fos = new FileOutputStream(file, false)) {
-            for (int i = 0; i < lines.size(); i++) {
-                String line = lines.get(i);
-                fos.write(line.getBytes(StandardCharsets.UTF_8));
-                if (i < lines.size() - 1) {
-                    fos.write('\n');
-                }
-            }
-        }
-    }
-
-    private JSONObject runTermuxApiCommand(String command, JSONArray args, String cwd, boolean background) {
-        Status status = parseStatus();
-        if (!status.termuxInstalled || !status.termuxApiInstalled) {
-            return buildBlocked("Install Termux and Termux:API to continue.");
-        }
-
-        Intent intent = new Intent(TERMUX_API_ACTION);
-        intent.setPackage(TERMUX_API_PACKAGE);
-        intent.putExtra("com.termux.api.extra.COMMAND", command);
-        intent.putExtra("com.termux.api.extra.ARGUMENTS", toStringArray(args));
-        intent.putExtra("com.termux.api.extra.WORKDIR", cwd);
-        intent.putExtra("com.termux.api.extra.BACKGROUND", background);
-
-        List<ResolveInfo> receivers = packageManager.queryBroadcastReceivers(intent, 0);
-        if (receivers == null || receivers.isEmpty()) {
-            return buildError("Termux:API invocation failed: unable to resolve broadcast receiver.");
-        }
-
-        try {
-            context.sendBroadcast(intent);
-            JSONObject response = new JSONObject();
-            response.put("ok", true);
-            response.put("blocked", false);
-            response.put("message", "Reload triggered");
-            return response;
-        } catch (Exception e) {
-            return buildError("Termux:API invocation failed: " + e.getMessage());
-        }
-    }
-
-    private String[] toStringArray(JSONArray array) {
-        String[] out = new String[array.length()];
-        for (int i = 0; i < array.length(); i++) {
-            out[i] = array.optString(i, "");
-        }
-        return out;
+        return String.join("\n", filtered);
     }
 
     private JSONObject buildError(String message) {

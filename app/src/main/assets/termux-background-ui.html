@@ -152,12 +152,8 @@
         lastStatus = status;
         if (!status.termuxInstalled) {
           setState('Blocked: Install Termux', 'Termux is required.', true, true);
-        } else if (!status.termuxApiInstalled) {
-          setState('Blocked: Install Termux:API', 'Install the Termux:API add-on to enable Apply.', true, true);
-        } else if (!status.canRunCommands) {
-          setState('Blocked', 'Termux:API broadcast not available.', true, true);
         } else {
-          setState('Ready', 'Termux + Termux:API detected. Select an image and press Apply.', false, false);
+          setState('Ready', 'Termux detected. Select an image and press Apply.', false, false);
         }
       } catch (err) {
         setState('Error', 'Could not read status: ' + err.message, true, true);
@@ -214,7 +210,7 @@
     });
 
     setBackgroundBtn.addEventListener('click', () => {
-      if (!selectedUri || !selectedFile) {
+      if (!selectedUri) {
         showToast('Select an image first.', true);
         return;
       }
