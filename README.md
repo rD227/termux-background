@@ -1,6 +1,10 @@
 # Termux Background
 
-> **✨ Status:** Active Development
+> **✨ Status:**  Archived 已归档
+
+You can use this instead on android
+在Android上，你可以用这个代替：
+ [click here](https://github.com/rD227/FloatPicture)
 
 🖼️ A Termux plugin and Android companion app for adding custom background images to your Termux terminal — with live reload, blur effects, opacity control, and scroll animations.
 
