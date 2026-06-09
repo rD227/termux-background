@@ -6,6 +6,9 @@
 # 在Android上，你可以用这个代替：
  [click here](https://github.com/rD227/FloatPicture)
 
+you will jump to https://github.com/rD227/FloatPicture
+ 
+
 🖼️ A Termux plugin and Android companion app for adding custom background images to your Termux terminal — with live reload, blur effects, opacity control, and scroll animations.
 
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-yellow.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
